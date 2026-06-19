@@ -14,6 +14,7 @@ import copy
 import os
 import pathlib
 import base64
+import subprocess
 import kombu
 import celery
 from pylatex import Document, Command, Package
@@ -296,6 +297,34 @@ async def process_latex(request: Request):
     with open(f"{filepath}/tex.pdf", "rb") as pdf_file:
         pdf_string = base64.b64encode(pdf_file.read())
         return pdf_string
+
+
+@app.post("/process_latex_svg", include_in_schema=True)
+async def process_latex_svg(request: Request):
+    # Render a (TikZ) snippet to a cropped, transparent SVG so it can be shown as an
+    # inline image instead of a PDF. Same input as /process_latex; the body's
+    # \usetikzlibrary lines are lifted into the preamble. Strokes are black on a
+    # transparent background; the frontend inverts them to white for the dark theme.
+    tex = (await request.body()).decode('utf-8')
+    body = "\n".join(line for line in tex.splitlines()
+                     if not line.startswith("\\usetikzlibrary"))
+    document = (
+        "\\documentclass[border=8pt]{standalone}\n"
+        "\\usepackage{tikz}\n"
+        "\\usetikzlibrary{decorations.pathmorphing}\n"
+        "\\begin{document}\n" + body + "\n\\end{document}\n"
+    )
+    workdir = "/opt/openmagnetics/latex"
+    pathlib.Path(workdir).mkdir(parents=True, exist_ok=True)
+    pathlib.Path(f"{workdir}/svg.tex").write_text(document, encoding="utf-8")
+    subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "svg.tex"],
+                   cwd=workdir, capture_output=True, check=False)
+    subprocess.run(["pdf2svg", f"{workdir}/svg.pdf", f"{workdir}/svg.svg"],
+                   cwd=workdir, capture_output=True, check=False)
+    svg = pathlib.Path(f"{workdir}/svg.svg")
+    if not svg.exists():
+        raise HTTPException(status_code=500, detail="SVG render failed")
+    return Response(content=svg.read_text(encoding="utf-8"), media_type="image/svg+xml")
 
 
 @app.post("/plot_core_and_fields", include_in_schema=True)

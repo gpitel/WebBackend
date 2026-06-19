@@ -7,7 +7,7 @@ WORKDIR /app
 
 # System packages often needed by features (PDF/plots)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gnuplot texlive-latex-base texlive-latex-extra lmodern \
+    gnuplot texlive-latex-base texlive-latex-extra lmodern pdf2svg \
     freecad curl \
  && rm -rf /var/lib/apt/lists/*
 
