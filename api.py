@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
-from app.backend.models import NotificationsTable, BugReportsTable, MasTable, IntermediateMasTable, AdvancedCoreMaterialsTable
+from app.backend.models import NotificationsTable, BugReportsTable, MasTable, IntermediateMasTable, AdvancedCoreMaterialsTable, TelemetryTable
 from app.backend.models import BugReport
 from app.backend.mas_models import MagneticCore, CoreShape, Magnetic, Inputs
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,9 +29,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'app/bac
 from plotter import purge_queue
 from plotter import task_generate_core_3d_model, task_plot_core_and_fields, task_plot_core, task_plot_wire, task_plot_wire_and_current_density
 from plotter import task_generate_core_technical_drawing, task_generate_gapping_technical_drawing
-import subprocess
+import ast
+import httpx
 
 temp_folder = "/opt/openmagnetics/temp"
+high_performance_backend_url = "http://86.127.248.99:8001"
+use_celery = ast.literal_eval(os.getenv('USE_CELERY', "True"))
+use_db = "OM_DB_ADDRESS" in os.environ
 
 
 def clean_dimensions(core):
@@ -153,22 +157,26 @@ async def core_compute_core_3d_model(request: Request):
     number_retries = 5
     stl_data = None
 
-    try:
-        for retry in range(number_retries):
-            result = task_generate_core_3d_model.delay(core, temp_folder)
-            try:
-                stl_data = result.get(timeout=10)
-            except celery.exceptions.TimeoutError:
-                continue
-            except ConnectionResetError:
-                continue
-            if stl_data is not None:
-                break
-            print("Retrying task_generate_core_3d_model")
-        if stl_data is None:
-            purge_queue()
-    except kombu.exceptions.OperationalError:
+    if not use_celery:
+        print("not use_celery")
         stl_data = task_generate_core_3d_model(core, temp_folder)
+    else:
+        try:
+            for retry in range(number_retries):
+                result = task_generate_core_3d_model.delay(core, temp_folder)
+                try:
+                    stl_data = result.get(timeout=10)
+                except celery.exceptions.TimeoutError:
+                    continue
+                except ConnectionResetError:
+                    continue
+                if stl_data is not None:
+                    break
+                print("Retrying task_generate_core_3d_model")
+            if stl_data is None:
+                purge_queue()
+        except kombu.exceptions.OperationalError:
+            stl_data = task_generate_core_3d_model(core, temp_folder)
 
     if stl_data is None:
         raise HTTPException(status_code=418, detail="Wrong dimensions")
@@ -184,22 +192,25 @@ async def core_compute_core_3d_model_stp(request: Request):
     number_retries = 5
     stp_data = None
 
-    try:
-        for retry in range(number_retries):
-            result = task_generate_core_3d_model.delay(core, temp_folder, False)
-            try:
-                stp_data = result.get(timeout=10)
-            except celery.exceptions.TimeoutError:
-                continue
-            except ConnectionResetError:
-                continue
-            if stp_data is not None:
-                break
-            print("Retrying task_generate_core_3d_model")
-        if stp_data is None:
-            purge_queue()
-    except kombu.exceptions.OperationalError:
+    if not use_celery:
         stp_data = task_generate_core_3d_model(core, temp_folder, False)
+    else:
+        try:
+            for retry in range(number_retries):
+                result = task_generate_core_3d_model.delay(core, temp_folder, False)
+                try:
+                    stp_data = result.get(timeout=10)
+                except celery.exceptions.TimeoutError:
+                    continue
+                except ConnectionResetError:
+                    continue
+                if stp_data is not None:
+                    break
+                print("Retrying task_generate_core_3d_model")
+            if stp_data is None:
+                purge_queue()
+        except kombu.exceptions.OperationalError:
+            stp_data = task_generate_core_3d_model(core, temp_folder, False)
 
     if stp_data is None:
         raise HTTPException(status_code=418, detail="Wrong dimensions")
@@ -215,22 +226,25 @@ async def core_compute_technical_drawing(request: Request):
     number_retries = 5
     views = None
 
-    try:
-        for retry in range(number_retries):
-            result = task_generate_core_technical_drawing.delay(data, temp_folder)
-            try:
-                views = result.get(timeout=10)
-            except celery.exceptions.TimeoutError:
-                continue
-            except ConnectionResetError:
-                continue
-            if views is not None:
-                break
-            print("Retrying task_generate_core_technical_drawing")
-        if views is None:
-            purge_queue()
-    except kombu.exceptions.OperationalError:
+    if not use_celery:
         views = task_generate_core_technical_drawing(data, temp_folder)
+    else:
+        try:
+            for retry in range(number_retries):
+                result = task_generate_core_technical_drawing.delay(data, temp_folder)
+                try:
+                    views = result.get(timeout=10)
+                except celery.exceptions.TimeoutError:
+                    continue
+                except ConnectionResetError:
+                    continue
+                if views is not None:
+                    break
+                print("Retrying task_generate_core_technical_drawing")
+            if views is None:
+                purge_queue()
+        except kombu.exceptions.OperationalError:
+            views = task_generate_core_technical_drawing(data, temp_folder)
 
     if views is None:
         raise HTTPException(status_code=418, detail="Wrong dimensions")
@@ -244,22 +258,25 @@ async def core_compute_gapping_technical_drawing(request: Request):
     number_retries = 5
     views = None
 
-    try:
-        for retry in range(number_retries):
-            result = task_generate_gapping_technical_drawing.delay(data, temp_folder)
-            try:
-                views = result.get(timeout=10)
-            except celery.exceptions.TimeoutError:
-                continue
-            except ConnectionResetError:
-                continue
-            if views is not None:
-                break
-            print("Retrying task_generate_gapping_technical_drawing")
-        if views is None:
-            purge_queue()
-    except kombu.exceptions.OperationalError:
+    if not use_celery:
         views = task_generate_core_technical_drawing(data, temp_folder)
+    else:
+        try:
+            for retry in range(number_retries):
+                result = task_generate_gapping_technical_drawing.delay(data, temp_folder)
+                try:
+                    views = result.get(timeout=10)
+                except celery.exceptions.TimeoutError:
+                    continue
+                except ConnectionResetError:
+                    continue
+                if views is not None:
+                    break
+                print("Retrying task_generate_gapping_technical_drawing")
+            if views is None:
+                purge_queue()
+        except kombu.exceptions.OperationalError:
+            views = task_generate_core_technical_drawing(data, temp_folder)
 
     if views is None:
         raise HTTPException(status_code=418, detail="Wrong dimensions")
@@ -475,10 +492,47 @@ def insert_intermediate_mas_background(data):
 
 @app.post("/insert_intermediate_mas", include_in_schema=False)
 async def insert_intermediate_mas(request: Request, background_tasks: BackgroundTasks):
-    data = await request.json()
-    background_tasks.add_task(insert_intermediate_mas_background, data)
+    if use_db:
+        data = await request.json()
+        background_tasks.add_task(insert_intermediate_mas_background, data)
 
-    return "Inserting in the background"
+        return "Inserting in the background"
+    else:
+        return "DB not available"
+
+
+def insert_telemetry_background(data, environment):
+    table = TelemetryTable()
+    table.record(
+        session_id=data.get('session_id', 'unknown'),
+        event_type=data.get('event_type', ''),
+        source=data.get('source', ''),
+        stage=data.get('stage'),
+        environment=environment,
+        app_version=data.get('app_version'),
+        mas_data=data.get('mas_data'),
+        topology=data.get('topology'),
+        mas_version=data.get('mas_version'),
+        result_count=data.get('result_count'),
+        error_message=data.get('error_message'),
+    )
+
+
+@app.post("/telemetry", include_in_schema=False)
+async def telemetry(request: Request, background_tasks: BackgroundTasks):
+    if use_db:
+        data = await request.json()
+        # The frontend build declares its environment (VITE_ENV). Trust it when
+        # valid; otherwise fall back to the backend's own OM_ENV. Defaults to
+        # production only as a last resort so untagged rows never masquerade as
+        # development (which would hide them from production stats).
+        env = data.get('environment')
+        if env not in ('development', 'production'):
+            env = "development" if os.getenv("OM_ENV", "production") == "development" else "production"
+        background_tasks.add_task(insert_telemetry_background, data, env)
+        return "Inserting in the background"
+    else:
+        return "DB not available"
 
 
 @app.post("/load_external_core_materials", include_in_schema=False)
@@ -525,3 +579,27 @@ async def read_advanced_core_material_by_name(request: Request):
     advanced_core_material_data = advanced_core_materials_table.read_material_by_name(dataJson["name"])
 
     return advanced_core_material_data
+
+
+@app.post("/create_simulation_from_mas", include_in_schema=False)
+async def create_simulation_from_mas(request: Request):
+    data = await request.json()
+    url = f'{high_performance_backend_url}/create_simulation_from_mas'
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, json=data, timeout=600)
+        # print(response.content)
+        print("len(response.content)")
+        print(len(response.content))
+        return Response(content=response.content, media_type="binary/octet-stream")
+
+
+@app.post("/is_high_performance_backend_available", include_in_schema=False)
+async def is_high_performance_backend_available():
+    try:
+        url = f'{high_performance_backend_url}/remote_available'
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, timeout=5)
+            print("Remote available")
+            return True
+    except Exception:
+        return False
