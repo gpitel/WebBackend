@@ -315,10 +315,12 @@ class BugReportsTable(Database):
 class DataTable(Database):
 
     def connect(self, schema='public'):
-        driver = os.getenv('OM_DB_DRIVER')
-        address = os.getenv('OM_DB_ADDRESS')
-        user = os.getenv('OM_DB_USER')
-        password = os.getenv('OM_DB_PASSWORD')
+        # Prefer explicit Mongo-specific env vars to avoid conflicts
+        # with Postgres OM_DB_* used elsewhere.
+        driver = os.getenv('OM_MONGO_DRIVER', os.getenv('OM_DB_DRIVER', 'mongodb'))
+        address = os.getenv('OM_MONGO_ADDRESS', os.getenv('OM_DB_ADDRESS', 'localhost:27017'))
+        user = os.getenv('OM_MONGO_USER', os.getenv('OM_DB_USER', 'openmagnetics'))
+        password = os.getenv('OM_MONGO_PASSWORD', os.getenv('OM_DB_PASSWORD', 'openmagnetics'))
 
         self.session = MongoClient(f"{driver}://{user}:{password}@{address}/")
 

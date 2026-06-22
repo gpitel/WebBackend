@@ -13,7 +13,12 @@ from celery import Celery
 from OpenMagneticsVirtualBuilder.builder import Builder as ShapeBuilder  # noqa: E402
 from models import PlotCacheTable
 
-app = Celery('plots', backend='rpc://', broker='pyamqp://guest@localhost//')
+# Allow broker/backends to be configured via environment for Docker Compose
+# Defaults keep single-container/localdev behavior working.
+BROKER_URL = os.getenv('BROKER_URL', 'pyamqp://guest@localhost//')
+RESULT_BACKEND = os.getenv('RESULT_BACKEND', 'rpc://')
+
+app = Celery('plots', backend=RESULT_BACKEND, broker=BROKER_URL)
 
 
 def purge_queue():
