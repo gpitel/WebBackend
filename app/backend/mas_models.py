@@ -368,6 +368,7 @@ class ConnectionType(Enum):
     Pin = "Pin"
     SMT = "SMT"
     Screw = "Screw"
+    Blind = "Blind"
 
 
 class Topologies(Enum):

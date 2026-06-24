@@ -14,11 +14,12 @@ import copy
 import os
 import pathlib
 import base64
+import subprocess
 import kombu
 import celery
-# from pylatex import Document, Command, Package
-# from pylatex.utils import NoEscape
-import PyOpenMagnetics
+from pylatex import Document, Command, Package
+from pylatex.utils import NoEscape
+import PyMKF
 from OpenMagneticsVirtualBuilder.builder import Builder as ShapeBuilder  # noqa: E402
 import sys
 # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../MVB/src/OpenMagneticsVirtualBuilder')))
@@ -26,7 +27,7 @@ import sys
 import hashlib
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'app/backend')))
 from plotter import purge_queue
-from plotter import task_generate_core_3d_model
+from plotter import task_generate_core_3d_model, task_plot_core_and_fields, task_plot_core, task_plot_wire, task_plot_wire_and_current_density
 from plotter import task_generate_core_technical_drawing, task_generate_gapping_technical_drawing
 import ast
 import httpx
@@ -283,36 +284,192 @@ async def core_compute_gapping_technical_drawing(request: Request):
         return views
 
 
-# @app.post("/process_latex", include_in_schema=True)
-# async def process_latex(request: Request):
-#     print(request)
-#     print(dir(request))
-#     tex = await request.body()
-#     tex = tex.decode('utf-8')
-#     filepath = "/opt/openmagnetics/latex"
-#     pathlib.Path(filepath).mkdir(parents=True, exist_ok=True)
-#     doc = Document(default_filepath=f"{filepath}/tex")
-#     doc.packages.append(Package('array'))
-#     doc.packages.append(Package('booktabs'))
-#     doc.packages.append(Package('babel'))
-#     doc.packages.append(Package('amsmath'))
-#     doc.packages.append(Package('relsize'))
-#     doc.packages.append(Package('cellspace'))
-#     doc.packages.append(Package('tikz'))
-#     doc.packages.append(Package('geometry'))
-#     doc.packages.append(Package('fancyhdr'))
-#     doc.preamble.append(Command('setlength\\cellspacetoplimit', '4pt'))
-#     doc.preamble.append(Command('setlength\\cellspacebottomlimit', '4pt'))
-#     doc.preamble.append(Command('usetikzlibrary', 'datavisualization'))
-#     doc.preamble.append(Command('geometry', 'tmargin=1in'))
-#     doc.preamble.append(Command('pagestyle', 'fancy'))
-#     tex = tex.replace('μ', '$\\mu$')
-#     doc.append(NoEscape(tex))
-#     doc.generate_pdf(clean_tex=False)
-#
-#     with open(f"{filepath}/tex.pdf", "rb") as pdf_file:
-#         pdf_string = base64.b64encode(pdf_file.read())
-#         return pdf_string
+@app.post("/process_latex", include_in_schema=True)
+async def process_latex(request: Request):
+    print(request)
+    print(dir(request))
+    tex = await request.body()
+    tex = tex.decode('utf-8')
+    filepath = "/opt/openmagnetics/latex"
+    pathlib.Path(filepath).mkdir(parents=True, exist_ok=True)
+    doc = Document(default_filepath=f"{filepath}/tex")
+    doc.packages.append(Package('array'))
+    doc.packages.append(Package('booktabs'))
+    doc.packages.append(Package('babel'))
+    doc.packages.append(Package('amsmath'))
+    doc.packages.append(Package('relsize'))
+    doc.packages.append(Package('cellspace'))
+    doc.packages.append(Package('tikz'))
+    doc.packages.append(Package('geometry'))
+    doc.packages.append(Package('fancyhdr'))
+    doc.preamble.append(Command('setlength\\cellspacetoplimit', '4pt'))
+    doc.preamble.append(Command('setlength\\cellspacebottomlimit', '4pt'))
+    doc.preamble.append(Command('usetikzlibrary', 'datavisualization'))
+    doc.preamble.append(Command('geometry', 'tmargin=1in'))
+    doc.preamble.append(Command('pagestyle', 'fancy'))
+    tex = tex.replace('μ', '$\\mu$')
+    doc.append(NoEscape(tex))
+    doc.generate_pdf(clean_tex=False)
+
+    with open(f"{filepath}/tex.pdf", "rb") as pdf_file:
+        pdf_string = base64.b64encode(pdf_file.read())
+        return pdf_string
+
+
+@app.post("/process_latex_svg", include_in_schema=True)
+async def process_latex_svg(request: Request):
+    # Render a (TikZ) snippet to a cropped, transparent SVG so it can be shown as an
+    # inline image instead of a PDF. Same input as /process_latex; the body's
+    # \usetikzlibrary lines are lifted into the preamble. Strokes are black on a
+    # transparent background; the frontend inverts them to white for the dark theme.
+    tex = (await request.body()).decode('utf-8')
+    body = "\n".join(line for line in tex.splitlines()
+                     if not line.startswith("\\usetikzlibrary"))
+    document = (
+        "\\documentclass[border=8pt]{standalone}\n"
+        "\\usepackage{tikz}\n"
+        "\\usetikzlibrary{decorations.pathmorphing}\n"
+        "\\begin{document}\n" + body + "\n\\end{document}\n"
+    )
+    workdir = "/opt/openmagnetics/latex"
+    pathlib.Path(workdir).mkdir(parents=True, exist_ok=True)
+    pathlib.Path(f"{workdir}/svg.tex").write_text(document, encoding="utf-8")
+    subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "svg.tex"],
+                   cwd=workdir, capture_output=True, check=False)
+    subprocess.run(["pdf2svg", f"{workdir}/svg.pdf", f"{workdir}/svg.svg"],
+                   cwd=workdir, capture_output=True, check=False)
+    svg = pathlib.Path(f"{workdir}/svg.svg")
+    if not svg.exists():
+        raise HTTPException(status_code=500, detail="SVG render failed")
+    return Response(content=svg.read_text(encoding="utf-8"), media_type="image/svg+xml")
+
+
+@app.post("/plot_core_and_fields", include_in_schema=True)
+async def plot_core_and_fields(request: Request):
+    data = await request.json()
+    number_retries = 5
+    plot = None
+
+    try:
+        for retry in range(number_retries):
+            result = task_plot_core_and_fields.delay(data, temp_folder)
+            try:
+                plot = result.get(timeout=10)
+            except celery.exceptions.TimeoutError:
+                continue
+            except ConnectionResetError:
+                continue
+            if plot is not None:
+                break
+            print("Retrying plot_core_and_fields")
+        if plot is None:
+            purge_queue()
+    except kombu.exceptions.OperationalError:
+        plot = task_plot_core_and_fields(data, temp_folder)
+
+    if plot is None:
+        raise HTTPException(status_code=418, detail="Plotting timed out")
+
+    if plot.endswith(".svg"):
+        return FileResponse(plot)
+    else:
+        return plot
+
+
+@app.post("/plot_core", include_in_schema=True)
+async def plot_core(request: Request):
+    data = await request.json()
+    number_retries = 5
+    plot = None
+
+    try:
+        for retry in range(number_retries):
+            result = task_plot_core.delay(data, temp_folder)
+            try:
+                plot = result.get(timeout=10)
+            except celery.exceptions.TimeoutError:
+                continue
+            except ConnectionResetError:
+                continue
+            if plot is not None:
+                break
+            print("Retrying task_plot_core")
+        if plot is None:
+            purge_queue()
+    except kombu.exceptions.OperationalError:
+        plot = task_plot_core(data, temp_folder)
+
+    if plot is None:
+        raise HTTPException(status_code=418, detail="Plotting timed out")
+
+    if plot.endswith(".svg"):
+        return FileResponse(plot)
+    else:
+        return plot
+
+
+@app.post("/plot_wire", include_in_schema=True)
+async def plot_wire(request: Request):
+    data = await request.json()
+    number_retries = 5
+    plot = None
+
+    try:
+        for retry in range(number_retries):
+            result = task_plot_wire.delay(data, temp_folder)
+            try:
+                plot = result.get(timeout=10)
+            except celery.exceptions.TimeoutError:
+                continue
+            except ConnectionResetError:
+                continue
+            if plot is not None:
+                break
+            print("Retrying task_plot_wire")
+        if plot is None:
+            purge_queue()
+    except kombu.exceptions.OperationalError:
+        plot = task_plot_wire(data, temp_folder)
+
+    if plot is None:
+        raise HTTPException(status_code=418, detail="Plotting timed out")
+
+    if plot.endswith(".svg"):
+        return FileResponse(plot)
+    else:
+        return plot
+
+
+@app.post("/plot_wire_and_current_density", include_in_schema=True)
+async def plot_wire_and_current_density(request: Request):
+    data = await request.json()
+    number_retries = 5
+    plot = None
+
+    try:
+        for retry in range(number_retries):
+            result = task_plot_wire_and_current_density.delay(data, temp_folder)
+            try:
+                plot = result.get(timeout=10)
+            except celery.exceptions.TimeoutError:
+                continue
+            except ConnectionResetError:
+                continue
+            if plot is not None:
+                break
+            print("Retrying task_plot_wire_and_current_density")
+        if plot is None:
+            purge_queue()
+    except kombu.exceptions.OperationalError:
+        plot = task_plot_wire_and_current_density(data, temp_folder)
+
+    if plot is None:
+        raise HTTPException(status_code=418, detail="Plotting timed out")
+
+    if plot.endswith(".svg"):
+        return FileResponse(plot)
+    else:
+        return plot
 
 
 def insert_mas_background(data):
@@ -384,8 +541,8 @@ async def load_external_core_materials(request: Request, background_tasks: Backg
 
     external_core_materials_string = data["coreMaterialsString"]
 
-    PyOpenMagnetics.load_core_materials(external_core_materials_string)
-    PyOpenMagnetics.load_core_materials("")
+    PyMKF.load_core_materials(external_core_materials_string)
+    PyMKF.load_core_materials("")
     return "Data loaded"
 
 
